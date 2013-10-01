@@ -11,7 +11,7 @@ class NewToYou
     last_month = Date.today << 1
     @options = {
       :bgg_api_url  => "http://boardgamegeek.com/xmlapi2",
-      :username     => 'wesbaker',
+      :username     => 'djnafai',
       :month        => last_month.month,
       :year         => last_month.year
     }
