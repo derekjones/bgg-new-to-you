@@ -1,5 +1,22 @@
 #!/usr/bin/env ruby
 
+# Plans
+# - Break up things into individual files and use the /lib directory? Try to
+#   find examples of this
+# - Provide a way to do the year ago posts, duplicating code at first is fine
+# - Refactor so both calls use the same code
+# - Color code the ratings using BGG's colors
+#   - 10/10 #00cc00
+#   - 9/10  #33cc99
+#   - 8/10  #66ff99
+#   - 7/10  #99ffff
+#   - 6/10  #9999ff
+#   - 5/10  #cc99ff
+#   - 4/10  #ff66cc
+#   - 3/10  #ff6699
+#   - 2/10  #ff3366
+#   - 1/10  #ff0000
+
 require 'date'
 require 'optparse'
 require 'open-uri'
@@ -10,10 +27,9 @@ class NewToYou
   def initialize
     last_month = Date.today << 1
     @options = {
-      :bgg_api_url  => "http://boardgamegeek.com/xmlapi2",
       :username     => 'djnafai',
       :month        => last_month.month,
-      :year         => last_month.year
+      :year         => last_month.year,
     }
 
     parse_options
@@ -21,10 +37,11 @@ class NewToYou
     # Establish previous start and end dates
     last_month = Date.new(@options[:year], @options[:month])
     @options[:start_date] = (last_month - 1).to_s
-	# last_month >> 1 gets the same time as above + 1 month, - 1 subtracts a day
+
+    # last_month >> 1 gets the same time as above + 1 month, - 1 subtracts a day
     @options[:end_date] = ((last_month >> 1) - 1).to_s
 
-    print_plays(retrieve_plays)
+    print_plays(retrieve_plays())
   end
 
   # Parse out command line options
@@ -47,9 +64,14 @@ class NewToYou
     end.parse!
   end
 
-  def retrieve_plays
+  def retrieve_plays(start_date = @options[:start_date], end_date = @options[:end_date], username = @options[:username])
     # Retrieve games played in month
-    plays = Nokogiri::XML(open("#{@options[:bgg_api_url]}/plays?username=#{@options[:username]}&mindate=#{@options[:start_date]}&maxdate=#{@options[:end_date]}&subtype=boardgame").read)
+    plays = BGG_API.new('plays', {
+      :username => username,
+      :mindate  => start_date,
+      :maxdate  => end_date,
+      :subtype  => 'boardgame'
+    }).retrieve
 
     _games = Hash.new
 
@@ -71,21 +93,39 @@ class NewToYou
       _games[objectid][:plays] = _games[objectid][:plays] + quantity.to_i
     end
 
-    # Now, figure out what my current ratings and plays for that game is
-    collection = Nokogiri::XML(open("#{@options[:bgg_api_url]}/collection?username=#{@options[:username]}&played=1&stats=1").read)
-
     _games.each do |objectid, data|
       # Filter out games I've played before (before mindate)
-      previous_plays = Nokogiri::XML(open("#{@options[:bgg_api_url]}/plays?username=#{@options[:username]}&maxdate=#{@options[:start_date]}&id=#{objectid}").read)
+      previous_plays = BGG_API.new('plays', {
+        :username => username,
+        :maxdate  => start_date,
+        :id       => objectid
+      }).retrieve
 
       if previous_plays.css('plays').first['total'].to_i > 0
         _games.delete(objectid)
         next
       end
 
-      game_info = collection.css("item[objectid='#{objectid}']")
-      next if game_info.empty?
+      # Now, figure out what my current ratings and plays for that game is
+      game_info = BGG_API.new('collection', {
+        :username => username,
+        :id       => objectid,
+        :stats    => 1
+      }).retrieve
+
+      # Error out
+      if not game_info.at_css('rating')
+        game_info = BGG_API.new('thing', {
+          :id       => objectid
+        }).retrieve
+        name = game_info.css('name').first['value']
+        puts "#{name} not rated. Please rate the game and run this script again:"
+        puts "\thttp://boardgamegeek.com/collection/user/#{username}?played=1&rated=0&ff=1"
+        exit 0
+      end
+
       _games[objectid][:rating] = game_info.css('rating').attr('value').content.to_i
+      _games[objectid][:comment] = game_info.css('comment').text
 
       total_plays = game_info.css('numplays').first.text.to_i
       _games[objectid][:plays_since] = total_plays - _games[objectid][:plays]
@@ -113,6 +153,34 @@ class NewToYou
 
   public :initialize
   private :parse_options, :retrieve_plays, :print_plays, :play_count
+end
+
+# BGG API class that pulls in data and takes a hash as a set of options for the
+# query string
+class BGG_API
+  @@bgg_api_url = "http://boardgamegeek.com/xmlapi2"
+
+  def initialize(type, options)
+    @type = type
+    @options = options
+  end
+
+  def set_options(options)
+    @options = @options.merge(options)
+  end
+
+  def retrieve
+    query = "#{@@bgg_api_url}/#{@type}?"
+
+    @options.each do |name, value|
+      query << "#{name}=#{value}&"
+    end
+
+    # Assigning the result first because calling it as an argument to the
+    # Nokogiri::XML constructor was causing issues.
+    result = open(query).read
+    Nokogiri::XML(result)
+  end
 end
 
 NewToYou.new
